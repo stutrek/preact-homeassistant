@@ -154,7 +154,12 @@ describe('registerPreactCard', () => {
     expect(callback).toHaveBeenCalledWith({ state: 'on' });
   });
 
-  it('clears all listeners on disconnect', () => {
+  it('preserves entity subscriptions across disconnect + reconnect', () => {
+    // HA detaches + reattaches cards during edit-mode toggling. The shadow
+    // root and its Preact tree travel with the host, so subscriptions
+    // registered by useEffect must survive — otherwise the host's listener
+    // map empties while components still believe they're subscribed, and
+    // entity updates stop reaching the UI.
     const type = uniqueType();
     registerPreactCard({
       type,
@@ -173,11 +178,12 @@ describe('registerPreactCard', () => {
     card.hass = makeHass({ 'sensor.temp': { state: '72' } });
     expect(callback).toHaveBeenCalledTimes(1);
 
-    card.disconnectedCallback();
+    document.body.removeChild(card);
+    document.body.appendChild(card);
     callback.mockClear();
 
     card.hass = makeHass({ 'sensor.temp': { state: '73' } });
-    expect(callback).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith({ state: '73' });
   });
 
   it('registers editor element when ConfigComponent is provided', () => {

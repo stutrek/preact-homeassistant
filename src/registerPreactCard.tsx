@@ -55,9 +55,12 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
       }
     }
 
-    disconnectedCallback() {
-      this._entityChangeListeners.clear();
-    }
+    // Intentionally no disconnectedCallback: HA detaches + reattaches the card
+    // on edit-mode toggle, but the shadow root (with Preact's tree + effects)
+    // travels with the host. Clearing _entityChangeListeners here would orphan
+    // the still-mounted components — their useEffect cleanups never run, so
+    // they think they're subscribed while the host's map is empty, and entity
+    // updates stop reaching the UI.
 
     set hass(hass: HomeAssistant) {
       const prevStates = this._hass?.states;
