@@ -38,10 +38,7 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
     private _hass?: HomeAssistant;
     private _config?: TConfig;
     private _shadowRoot: ShadowRoot;
-    private _hasRendered = false;
     private _entityChangeListeners = new Map<string, Set<(entity: any) => void>>();
-    // Pending tree teardown — see disconnectedCallback.
-    private _unmountTimer: ReturnType<typeof setTimeout> | undefined;
 
     constructor() {
       super();
@@ -49,34 +46,9 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
     }
 
     connectedCallback() {
-      // If a teardown was scheduled by a recent disconnect, cancel it: HA is
-      // doing a transient detach/reattach (edit-mode toggle, drag/drop) and
-      // the tree is still valid.
-      if (this._unmountTimer !== undefined) {
-        clearTimeout(this._unmountTimer);
-        this._unmountTimer = undefined;
-      }
-      if (this._hass && this._config && !this._hasRendered) {
+      if (this._hass && this._config) {
         this._render();
       }
-    }
-
-    disconnectedCallback() {
-      // HA disconnects + reconnects the element during edit-mode toggling and
-      // drag-and-drop. A reconnect lands within a tick. If we're still
-      // detached after a short delay, tear the Preact tree down properly so
-      // useEffect cleanups run (e.g. Leaflet's map.remove(), which removes
-      // its non-passive touch/wheel listeners from window/document).
-      // Leaving the tree mounted on a detached shadow root leaks listeners on
-      // every reconnect cycle and eventually locks up the UI.
-      if (this._unmountTimer !== undefined) return;
-      this._unmountTimer = setTimeout(() => {
-        this._unmountTimer = undefined;
-        if (this.isConnected) return;
-        render(null, this._shadowRoot);
-        this._hasRendered = false;
-        this._entityChangeListeners.clear();
-      }, 100);
     }
 
     set hass(hass: HomeAssistant) {
@@ -91,9 +63,6 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
         }
       }
 
-      // Render only when attached. HA may set hass/config before insertion;
-      // rendering into a detached shadow root then again on connect duplicates
-      // the tree. connectedCallback handles the detached-first-render case.
       if (!prevStates && this._config && this.isConnected) {
         this._render();
       }
@@ -138,7 +107,6 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
         </HAProvider>,
         this._shadowRoot,
       );
-      this._hasRendered = true;
     }
 
     static getConfigElement() {
