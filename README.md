@@ -102,19 +102,42 @@ Returns a strict type based on the domain prefix:
 - `'calendar.*'` → `CalendarEntity`
 - `'weather.*'` → `WeatherEntity`
 - `'sun.sun'` → `SunEntity`
+- `'fan.*'` → `FanEntity`
 - Other domains → `HassEntity` (the loose type from `home-assistant-js-websocket`)
 
 The mapping comes from the `DomainEntityMap` interface. To add a new domain,
 see the *Contributing types* section below.
 
+### `useService(entityId)`
+
+Returns a stable function that calls services on a specific entity. The
+service domain is parsed from the entity ID prefix and `entity_id` is
+auto-injected into every call. Service names and data shapes are
+strongly typed via `DomainServiceMap` when the domain is registered.
+
+```tsx
+const fanService = useService(config.entity);   // config.entity: `fan.${string}`
+await fanService('toggle');                     // entity_id auto-injected
+await fanService('set_percentage', { percentage: 67 });
+```
+
+For registered domains (currently `fan`), TypeScript autocompletes service
+names and validates the data shape. For other domains the hook still works,
+just without per-service autocomplete — useful for ad-hoc calls until the
+domain is added to `DomainServiceMap`.
+
+The returned function is a no-op if the entity ID is empty (common while the
+card config is being set up) or if `hass` isn't connected yet.
+
 ### `useHass()`
 
-Access the full `hass` object for calling services or reading config. Does not
-re-render on entity changes.
+Access the full `hass` object for reading config or making service calls that
+`useService` doesn't cover (different entity per call, no entity, custom
+`return_response`, etc.). Does not re-render on entity changes.
 
 ```tsx
 const { getHass } = useHass();
-await getHass()?.callService('light', 'turn_on', { entity_id: 'light.bedroom' });
+await getHass()?.callService('script', 'morning_routine');
 ```
 
 ### `useCalendarEvents(entityId, { start, end })`
@@ -189,8 +212,9 @@ All HA domain types live in [`src/types/`](src/types/):
 - [`calendar.ts`](src/types/calendar.ts) — `CalendarEntity`, `CalendarEvent`, `CalendarEventWithSource`
 - [`weather.ts`](src/types/weather.ts) — `WeatherEntity`, `WeatherForecast`, `ForecastType`
 - [`sun.ts`](src/types/sun.ts) — `SunEntity`
+- [`fan.ts`](src/types/fan.ts) — `FanEntity`, `FanServices`
 - [`common.ts`](src/types/common.ts) — `HomeAssistant`, `FetchStatus`
-- [`index.ts`](src/types/index.ts) — `DomainEntityMap`, `EntityForId<T>`
+- [`index.ts`](src/types/index.ts) — `DomainEntityMap`, `EntityForId<T>`, `DomainServiceMap`, `ServicesForId<T>`
 
 Re-exported from the package root:
 
@@ -200,8 +224,13 @@ import type {
   CalendarEntity,
   WeatherEntity,
   SunEntity,
+  FanEntity,
+  FanServices,
   WeatherForecast,
   EntityForId,
+  DomainEntityMap,
+  DomainServiceMap,
+  ServicesForId,
   /* ... */
 } from 'preact-homeassistant';
 ```
@@ -214,10 +243,15 @@ for another domain (light, climate, media_player, cover, etc.), PRs are very
 welcome.
 
 1. Look up the domain in the [Home Assistant frontend repo](https://github.com/home-assistant/frontend/tree/dev/src/data) — most domains have a `data/<domain>.ts` file with TypeScript types.
-2. Add `src/types/<domain>.ts` mirroring the fields your card needs. Extend `HassEntityBase` and `HassEntityAttributeBase` from `home-assistant-js-websocket`.
-3. Add the entity to `DomainEntityMap` in [`src/types/index.ts`](src/types/index.ts) and re-export the types.
+2. Add `src/types/<domain>.ts`. Include an entity interface that extends `HassEntityBase` / `HassEntityAttributeBase` from `home-assistant-js-websocket`, plus a services interface mapping each service name to its data shape (or `undefined` for services that take no payload beyond `entity_id`). See [`src/types/fan.ts`](src/types/fan.ts) for the shape.
+3. In [`src/types/index.ts`](src/types/index.ts), add the entity to `DomainEntityMap` and the services to `DomainServiceMap`, and re-export the new types.
 4. Add a quick test under `src/__tests__/` if you're feeling thorough.
 5. PR.
+
+Both the entity types and the service types are opt-in: until a domain
+appears in `DomainEntityMap`, `useEntity('light.foo')` falls back to
+`HassEntity`; until it appears in `DomainServiceMap`, `useService('light.foo')`
+still works but without per-service autocomplete.
 
 We err toward including only fields that are well-documented; speculative
 attributes can land later.

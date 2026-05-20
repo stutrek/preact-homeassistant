@@ -3,6 +3,7 @@ export {
   HAProvider,
   useEntity,
   useHass,
+  useService,
   useCachedFetch,
   useCalendarEvents,
   useMultiCalendarEvents,
@@ -22,6 +23,10 @@ export type {
   WeatherForecast,
   ForecastType,
   SunEntity,
+  FanEntity,
+  FanServices,
   EntityForId,
   DomainEntityMap,
+  DomainServiceMap,
+  ServicesForId,
 } from './types';

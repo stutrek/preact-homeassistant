@@ -10,6 +10,7 @@ import type {
   FetchStatus,
   ForecastType,
   HomeAssistant,
+  ServicesForId,
   WeatherForecast,
 } from './types';
 import { useCallbackStable } from './useCallbackStable';
@@ -91,6 +92,36 @@ export function useEntity<T extends string>(entityId: T): EntityForId<T> | undef
 export function useHass(): { getHass: () => HomeAssistant | undefined } {
   const store = useHAStore();
   return { getHass: store.getHass };
+}
+
+type ServiceCaller<T extends string> = <S extends keyof ServicesForId<T> & string>(
+  service: S,
+  ...args: ServicesForId<T>[S] extends undefined
+    ? []
+    : Record<string, never> extends Exclude<ServicesForId<T>[S], undefined>
+      ? [data?: ServicesForId<T>[S]]
+      : [data: ServicesForId<T>[S]]
+) => Promise<void>;
+
+/**
+ * Returns a stable function that calls services on a specific HA entity.
+ * The service domain is parsed from the entity ID prefix and `entity_id` is
+ * auto-injected into every call. Service names and data shapes are strongly
+ * typed via DomainServiceMap when the domain is registered. No-ops if hass
+ * is not yet available or the entity ID is empty.
+ *
+ *   const fanService = useService(config.entity);   // `fan.${string}`
+ *   await fanService('turn_off');
+ *   await fanService('set_percentage', { percentage: 67 });
+ */
+export function useService<T extends string>(entityId: T): ServiceCaller<T> {
+  const { getHass } = useHass();
+  return useCallbackStable(((service: string, data?: object) => {
+    const hass = getHass();
+    if (!hass || !entityId.includes('.')) return Promise.resolve();
+    const domain = entityId.split('.', 1)[0];
+    return hass.callService(domain, service, { entity_id: entityId, ...data });
+  }) as ServiceCaller<T>);
 }
 
 interface UseCachedFetchResult<T> {
