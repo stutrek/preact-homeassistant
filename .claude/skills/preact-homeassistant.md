@@ -126,6 +126,49 @@ All return `{ status, error, refetch, ...data }` where `status` is
 `'loading' | 'cached' | 'ready' | 'refreshing'`. `'cached'` means data from
 localStorage is showing while a fresh fetch is in flight — render it.
 
+### DOM measurement — `useResizeObserver` / `useWidth`
+
+HA's dashboard switch and edit-mode toggle briefly detach cards and run CSS
+transitions that report **zero width or height** on otherwise-attached
+containers. Naive measurement code that divides by a dimension produces
+`Infinity` or `NaN`, and downstream loops (jittered grids, virtualised lists,
+`Math.ceil(width / cellSize)`) lock the main thread. Use these hooks instead
+of rolling your own `ResizeObserver`.
+
+`useResizeObserver(ref, cb, deps?)` — imperative, callback-based. Fires once
+after mount, on every resize, and whenever `deps` change. Suppressed while
+the element is detached from the document; **zero dimensions are passed
+through**, so guard inside the callback if you care:
+
+```tsx
+const containerRef = useRef<HTMLDivElement>(null);
+useResizeObserver(containerRef, ({ width }) => {
+  if (width === 0) return;
+  // imperative drawing here — no re-renders, ctx is the caller's
+}, [forecast]);
+```
+
+`useWidth(ref)` — stateful, returns `number | undefined`. `undefined`
+until the first non-zero measurement, then a positive width that never
+goes back to `undefined` or `0`. The hook silently ignores detached states
+and transient zero-width firings, so the component renders with the last
+good value instead of flashing through a degenerate layout:
+
+```tsx
+const ref = useRef<HTMLDivElement>(null);
+const width = useWidth(ref);
+return (
+  <div ref={ref}>
+    {width !== undefined && <Chart width={width} />}
+  </div>
+);
+```
+
+Pick `useWidth` when the value needs to be in JSX (responsive layout,
+prop to a sized child). Pick `useResizeObserver` when you'd otherwise wire
+up your own observer for imperative work (canvas drawing) and don't want a
+component-level re-render on every resize.
+
 ## Styles
 
 Styles are registered globally via the `css\`\`` tagged template and injected

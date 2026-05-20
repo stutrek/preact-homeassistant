@@ -10,6 +10,12 @@ export {
   useWeatherForecast,
 } from './HAContext';
 export { useCallbackStable } from './useCallbackStable';
+export {
+  useResizeObserver,
+  type ElementSize,
+  type ResizeCallback,
+} from './useResizeObserver';
+export { useWidth } from './useWidth';
 export { css, registerRawStyles, getAllStyles } from './styleRegistry';
 export { loadFromCache, saveToCache } from './cacheUtils';
 

@@ -171,6 +171,60 @@ const { forecast, status, error, refetch } = useWeatherForecast('weather.home', 
 Generic hook for fetching data with localStorage caching. The domain-specific
 hooks above are built on this.
 
+### `useResizeObserver(ref, callback, deps?)`
+
+Observe an element's size via `ResizeObserver`. The callback fires once after
+mount with the current size, on every subsequent resize, and whenever `deps`
+change. The callback is held in a ref, so passing a fresh closure each render
+is safe — the observer is never re-created.
+
+```tsx
+const containerRef = useRef<HTMLDivElement>(null);
+
+useResizeObserver(
+  containerRef,
+  ({ width, height }) => {
+    if (width === 0 || height === 0) return; // optional, consumer's call
+    drawChart(canvasRef.current, forecast, width, height);
+  },
+  [forecast],
+);
+```
+
+The callback is suppressed while the element is detached from the document.
+Zero width/height is passed through — many draw routines need to guard
+against zero dimensions (a 0-sized canvas throws `InvalidStateError` on
+`drawImage`; ratios of measurements like `Math.ceil(width / cellSize)`
+produce `Infinity` when a dimension is zero and infinite-loop the next
+`for` they feed into) — but the guard belongs at the call site so the hook
+stays general-purpose.
+
+Sizes are read from `offsetWidth` / `offsetHeight` (CSS pixels, includes
+padding and border).
+
+### `useWidth(ref)`
+
+Stateful sibling to `useResizeObserver` for the JSX path: tracks a
+referenced element's width and re-renders the component when it changes.
+Returns `undefined` until the first non-zero measurement, then a positive
+number that never returns to `undefined` or `0` — transient zero-width
+firings during HA layout transitions (dashboard switch, edit-mode toggle)
+and detached states are silently ignored.
+
+```tsx
+const ref = useRef<HTMLDivElement>(null);
+const width = useWidth(ref);
+return (
+  <div ref={ref}>
+    {width !== undefined && <Chart width={width} />}
+  </div>
+);
+```
+
+Use this when the width needs to appear in JSX (responsive layout, prop to
+a sized child). For imperative use inside a draw callback, prefer
+`useResizeObserver` directly — no state, no extra re-renders.
+
 ## Styles
 
 Styles are registered globally via the `css\`\`` tagged template and
