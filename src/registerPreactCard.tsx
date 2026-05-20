@@ -40,6 +40,8 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
     private _shadowRoot: ShadowRoot;
     private _hasRendered = false;
     private _entityChangeListeners = new Map<string, Set<(entity: any) => void>>();
+    // Pending tree teardown — see disconnectedCallback.
+    private _unmountTimer: ReturnType<typeof setTimeout> | undefined;
 
     constructor() {
       super();
@@ -47,20 +49,35 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
     }
 
     connectedCallback() {
-      // HA disconnects + reconnects the element during edit-mode toggling.
-      // Re-rendering on each connect causes Preact to lose its diff anchor and
-      // append a duplicate tree, so only render once per attachment cycle.
+      // If a teardown was scheduled by a recent disconnect, cancel it: HA is
+      // doing a transient detach/reattach (edit-mode toggle, drag/drop) and
+      // the tree is still valid.
+      if (this._unmountTimer !== undefined) {
+        clearTimeout(this._unmountTimer);
+        this._unmountTimer = undefined;
+      }
       if (this._hass && this._config && !this._hasRendered) {
         this._render();
       }
     }
 
-    // Intentionally no disconnectedCallback: HA detaches + reattaches the card
-    // on edit-mode toggle, but the shadow root (with Preact's tree + effects)
-    // travels with the host. Clearing _entityChangeListeners here would orphan
-    // the still-mounted components — their useEffect cleanups never run, so
-    // they think they're subscribed while the host's map is empty, and entity
-    // updates stop reaching the UI.
+    disconnectedCallback() {
+      // HA disconnects + reconnects the element during edit-mode toggling and
+      // drag-and-drop. A reconnect lands within a tick. If we're still
+      // detached after a short delay, tear the Preact tree down properly so
+      // useEffect cleanups run (e.g. Leaflet's map.remove(), which removes
+      // its non-passive touch/wheel listeners from window/document).
+      // Leaving the tree mounted on a detached shadow root leaks listeners on
+      // every reconnect cycle and eventually locks up the UI.
+      if (this._unmountTimer !== undefined) return;
+      this._unmountTimer = setTimeout(() => {
+        this._unmountTimer = undefined;
+        if (this.isConnected) return;
+        render(null, this._shadowRoot);
+        this._hasRendered = false;
+        this._entityChangeListeners.clear();
+      }, 100);
+    }
 
     set hass(hass: HomeAssistant) {
       const prevStates = this._hass?.states;

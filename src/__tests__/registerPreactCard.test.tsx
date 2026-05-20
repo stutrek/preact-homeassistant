@@ -186,6 +186,79 @@ describe('registerPreactCard', () => {
     expect(callback).toHaveBeenCalledWith({ state: '73' });
   });
 
+  it('tears the Preact tree down after a sustained disconnect', async () => {
+    // When HA permanently removes a card (real removal, not edit-mode
+    // toggle), we need the tree's useEffect cleanups to run — otherwise
+    // imperative side-effects like Leaflet's window-level listeners leak.
+    const cleanupSpy = vi.fn();
+    function CleanupComponent() {
+      // useEffect cleanup runs on unmount only
+      return (
+        <div
+          ref={(el) => {
+            if (el === null) cleanupSpy();
+          }}
+        >
+          x
+        </div>
+      );
+    }
+    const type = uniqueType();
+    registerPreactCard({
+      type,
+      name: 'Test',
+      description: 'Test',
+      Component: CleanupComponent,
+    });
+
+    const card = document.createElement(type) as any;
+    document.body.appendChild(card);
+    card.setConfig({ entities: [] });
+    card.hass = makeHass({});
+
+    document.body.removeChild(card);
+    // Wait past the deferred-unmount timer (100ms in registerPreactCard).
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(cleanupSpy).toHaveBeenCalled();
+  });
+
+  it('skips teardown when a disconnect is followed by a reconnect', async () => {
+    // Edit-mode toggle and drag/drop produce a rapid detach/reattach; the
+    // tree must survive intact so in-flight UI state (open modal, scroll
+    // position) isn't lost.
+    const cleanupSpy = vi.fn();
+    function CleanupComponent() {
+      return (
+        <div
+          ref={(el) => {
+            if (el === null) cleanupSpy();
+          }}
+        >
+          x
+        </div>
+      );
+    }
+    const type = uniqueType();
+    registerPreactCard({
+      type,
+      name: 'Test',
+      description: 'Test',
+      Component: CleanupComponent,
+    });
+
+    const card = document.createElement(type) as any;
+    document.body.appendChild(card);
+    card.setConfig({ entities: [] });
+    card.hass = makeHass({});
+
+    document.body.removeChild(card);
+    document.body.appendChild(card);
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(cleanupSpy).not.toHaveBeenCalled();
+  });
+
   it('registers editor element when ConfigComponent is provided', () => {
     const type = uniqueType();
     function TestEditor() {
