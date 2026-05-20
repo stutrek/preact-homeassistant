@@ -1,6 +1,6 @@
 {
   "name": "preact-homeassistant",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Preact hooks and helpers for building Home Assistant custom cards",
   "author": {
     "name": "Stu Kabakoff",
@@ -30,7 +30,12 @@
       }
     }
   },
-  "files": ["dist", "src", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "keywords": [
     "home-assistant",
     "hacs",
@@ -54,7 +59,10 @@
     "home-assistant-js-websocket": "^9.6.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@biomejs/biome", "esbuild"]
+    "onlyBuiltDependencies": [
+      "@biomejs/biome",
+      "esbuild"
+    ]
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
