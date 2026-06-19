@@ -49,18 +49,28 @@ export function createMockSubscribe() {
 interface RenderWithHAOptions extends Omit<RenderOptions, 'wrapper'> {
   hass?: HomeAssistant;
   subscribeFn?: MockSubscribeFn;
+  subscribeToHass?: (cb: () => void) => () => void;
+  // Inject a per-card cache so tests can seed/inspect it.
+  cache?: Map<string, { data: unknown }>;
 }
 
 export function renderWithHA(ui: ComponentChildren, options: RenderWithHAOptions = {}) {
   const {
     hass = makeHass(),
     subscribeFn = createMockSubscribe().subscribe,
+    subscribeToHass,
+    cache,
     ...renderOptions
   } = options;
 
   function Wrapper({ children }: { children: ComponentChildren }) {
     return (
-      <HAProvider hass={hass} subscribeToEntity={subscribeFn}>
+      <HAProvider
+        hass={hass}
+        subscribeToEntity={subscribeFn}
+        subscribeToHass={subscribeToHass}
+        cache={cache}
+      >
         {children}
       </HAProvider>
     );

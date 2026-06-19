@@ -1,6 +1,6 @@
 import { act, screen } from '@testing-library/preact';
 import { useRef } from 'preact/hooks';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { useEntity } from '../HAContext';
 import { createMockSubscribe, makeHass, renderWithHA } from './testHelpers';
 
@@ -18,10 +18,6 @@ function EntityDisplay({ entityId }: { entityId: string }) {
 }
 
 describe('useEntity', () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
   it('returns the initial entity state from hass', () => {
     const hass = makeHass({
       'sensor.temp': { entity_id: 'sensor.temp', state: '72' },
@@ -64,37 +60,35 @@ describe('useEntity', () => {
     expect(screen.getByTestId('state').textContent).toBe('75');
   });
 
-  it('caches entity to localStorage on update', async () => {
+  it('caches the entity to the per-card cache on update', async () => {
+    const cache = new Map<string, { data: unknown }>();
     const { subscribe, notify } = createMockSubscribe();
 
     renderWithHA(<EntityDisplay entityId="sensor.temp" />, {
       hass: makeHass({}),
       subscribeFn: subscribe,
+      cache,
     });
 
     await act(() => {
       notify('sensor.temp', { entity_id: 'sensor.temp', state: '75' });
     });
 
-    const cached = localStorage.getItem('preact-ha:entity:sensor.temp');
-    expect(cached).toBeTruthy();
-    const parsed = JSON.parse(cached!);
-    expect(parsed.data.state).toBe('75');
+    expect(cache.get('entity:sensor.temp')).toEqual({
+      data: { entity_id: 'sensor.temp', state: '75' },
+    });
   });
 
   it('loads from cache when hass has no state', () => {
-    // Pre-populate cache
-    const entry = {
-      data: { entity_id: 'sensor.temp', state: '68' },
-      timestamp: Date.now(),
-    };
-    localStorage.setItem('preact-ha:entity:sensor.temp', JSON.stringify(entry));
-
+    const cache = new Map<string, { data: unknown }>([
+      ['entity:sensor.temp', { data: { entity_id: 'sensor.temp', state: '68' } }],
+    ]);
     const { subscribe } = createMockSubscribe();
 
     renderWithHA(<EntityDisplay entityId="sensor.temp" />, {
       hass: makeHass({}),
       subscribeFn: subscribe,
+      cache,
     });
 
     expect(screen.getByTestId('state').textContent).toBe('68');

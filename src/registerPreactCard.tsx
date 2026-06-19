@@ -23,6 +23,13 @@ declare global {
   }
 }
 
+// Grace period before a disconnected card is torn down. HA detaches and
+// re-attaches cards transiently (scroll virtualization, edit mode); only a card
+// that stays gone past this window is genuinely removed, so we defer the
+// Preact unmount — and the effect cleanups it triggers (timers, subscriptions)
+// — until then. A reconnect within the window cancels the teardown.
+const TEARDOWN_GRACE_MS = 5000;
+
 export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<TConfig>) {
   const {
     type,
@@ -34,21 +41,71 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
     getStubConfig,
   } = options;
 
-  class HACard extends HTMLElement {
-    private _hass?: HomeAssistant;
-    private _config?: TConfig;
+  // Shared host-element plumbing: config/hass storage, connect/disconnect
+  // lifecycle, deferred teardown, and the render skeleton. Subclasses supply
+  // the render root and the tree to render, and may override hass behavior.
+  abstract class BaseHACard extends HTMLElement {
+    protected _hass?: HomeAssistant;
+    protected _config?: TConfig;
+    private _teardownTimer?: ReturnType<typeof setTimeout>;
+
+    protected abstract _getRenderRoot(): Element | ShadowRoot;
+    protected abstract _renderTree(): void;
+    protected _renderUnconfigured(): void {}
+
+    connectedCallback() {
+      if (this._teardownTimer !== undefined) {
+        clearTimeout(this._teardownTimer);
+        this._teardownTimer = undefined;
+      }
+      this._maybeRenderOnConnect();
+    }
+
+    protected _maybeRenderOnConnect() {
+      if (this._hass && this._config) {
+        this._render();
+      }
+    }
+
+    disconnectedCallback() {
+      if (this._teardownTimer !== undefined) clearTimeout(this._teardownTimer);
+      this._teardownTimer = setTimeout(() => {
+        // Unmount the Preact tree, running effect cleanups (clears timers and
+        // entity subscriptions). Scheduled, never synchronous, so a transient
+        // disconnect+reconnect leaves the tree intact.
+        render(null, this._getRenderRoot());
+        this._teardownTimer = undefined;
+      }, TEARDOWN_GRACE_MS);
+    }
+
+    setConfig(config: TConfig) {
+      this._config = config;
+      if (this._hass && this.isConnected) {
+        this._render();
+      }
+    }
+
+    protected _render() {
+      if (!this._config || !this._hass) {
+        this._renderUnconfigured();
+        return;
+      }
+      this._renderTree();
+    }
+  }
+
+  class HACard extends BaseHACard {
     private _shadowRoot: ShadowRoot;
     private _entityChangeListeners = new Map<string, Set<(entity: any) => void>>();
+    private _hassChangeListeners = new Set<() => void>();
 
     constructor() {
       super();
       this._shadowRoot = this.attachShadow({ mode: 'open' });
     }
 
-    connectedCallback() {
-      if (this._hass && this._config) {
-        this._render();
-      }
+    protected _getRenderRoot() {
+      return this._shadowRoot;
     }
 
     set hass(hass: HomeAssistant) {
@@ -63,14 +120,12 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
         }
       }
 
-      if (!prevStates && this._config && this.isConnected) {
-        this._render();
-      }
-    }
+      // Notify non-entity (config/themes) subscribers on every update. This does
+      // not re-render the whole card — useHassValue re-renders only its own
+      // consumer, and only when its selected slice actually changes.
+      this._hassChangeListeners.forEach((listener) => listener());
 
-    setConfig(config: TConfig) {
-      this._config = config;
-      if (this._hass && this.isConnected) {
+      if (!prevStates && this._config && this.isConnected) {
         this._render();
       }
     }
@@ -92,21 +147,31 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
       };
     };
 
-    private _render() {
-      if (!this._config || !this._hass) {
-        if (UnconfiguredComponent) {
-          render(<UnconfiguredComponent />, this._shadowRoot);
-        }
-        return;
-      }
+    private _subscribeToHass = (callback: () => void) => {
+      this._hassChangeListeners.add(callback);
+      return () => {
+        this._hassChangeListeners.delete(callback);
+      };
+    };
 
+    protected _renderTree() {
       render(
-        <HAProvider hass={this._hass} subscribeToEntity={this._subscribeToEntity}>
+        <HAProvider
+          hass={this._hass}
+          subscribeToEntity={this._subscribeToEntity}
+          subscribeToHass={this._subscribeToHass}
+        >
           <style>{getAllStyles()}</style>
-          <Component config={this._config} />
+          <Component config={this._config!} />
         </HAProvider>,
         this._shadowRoot,
       );
+    }
+
+    protected _renderUnconfigured() {
+      if (UnconfiguredComponent) {
+        render(<UnconfiguredComponent />, this._shadowRoot);
+      }
     }
 
     static getConfigElement() {
@@ -126,15 +191,21 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
   if (ConfigComponent) {
     const EditorComponent = ConfigComponent;
 
-    class HACardEditor extends HTMLElement {
-      private _hass?: HomeAssistant;
-      private _config?: TConfig;
+    class HACardEditor extends BaseHACard {
+      protected _getRenderRoot() {
+        return this;
+      }
 
+      // The editor re-renders on every hass update: it passes `hass` straight to
+      // HA's <ha-form>/<ha-selector>, whose entity pickers need a fresh hass to
+      // stay current. (Unlike the card, which renders once then subscribes.)
       set hass(hass: HomeAssistant) {
         this._hass = hass;
         this._render();
       }
 
+      // Render whenever config arrives, regardless of connection — HA may set
+      // config/hass before connecting the editor element.
       setConfig(config: TConfig) {
         this._config = config;
         this._render();
@@ -150,14 +221,12 @@ export function registerPreactCard<TConfig>(options: RegisterPreactCardOptions<T
         );
       };
 
-      private _render() {
-        if (!this._hass || !this._config) return;
-
-        // Render to light DOM so HA's custom elements (ha-select etc.) work.
+      // Render to light DOM so HA's custom elements (ha-form etc.) work.
+      protected _renderTree() {
         render(
           <EditorComponent
-            hass={this._hass}
-            config={this._config}
+            hass={this._hass!}
+            config={this._config!}
             onConfigChanged={this._fireConfigChanged}
           />,
           this,

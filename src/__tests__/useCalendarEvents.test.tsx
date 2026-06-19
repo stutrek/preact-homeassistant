@@ -1,7 +1,7 @@
 import { act, screen, waitFor } from '@testing-library/preact';
 import { render } from '@testing-library/preact';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useMultiCalendarEvents } from '../HAContext';
+import { useCalendarEvents } from '../HAContext';
 import { HAProvider } from '../HAContext';
 import type { FetchStatus } from '../types';
 import type { CalendarEventWithSource } from '../types';
@@ -16,7 +16,7 @@ function CalendarDisplay({
   start: Date;
   end: Date;
 }) {
-  const { events, status, error } = useMultiCalendarEvents(entityIds, {
+  const { events, status, error } = useCalendarEvents(entityIds, {
     start,
     end,
   });
@@ -33,12 +33,11 @@ function CalendarDisplay({
   );
 }
 
-describe('useMultiCalendarEvents', () => {
+describe('useCalendarEvents', () => {
   const start = new Date('2025-01-01');
   const end = new Date('2025-01-31');
 
   beforeEach(() => {
-    localStorage.clear();
     vi.restoreAllMocks();
   });
 

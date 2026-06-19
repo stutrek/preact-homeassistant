@@ -1,32 +1,20 @@
-const CACHE_PREFIX = 'preact-ha:';
-const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000;
+// In-memory cache helpers. The cache Map is owned per-card by the HAProvider
+// store (see HAContext), so its lifetime matches the card and it is
+// garbage-collected when the card is torn down. There is intentionally no
+// persistence, TTL, or size cap: freshness comes from entity subscriptions and
+// periodic refetch, not from cache expiry, and growth is bounded by the ranges
+// a single card visits in a session.
 
-interface CacheEntry<T> {
+export interface CacheEntry<T> {
   data: T;
-  timestamp: number;
 }
 
-export function loadFromCache<T>(key: string): T | undefined {
-  try {
-    const raw = localStorage.getItem(`${CACHE_PREFIX}${key}`);
-    if (!raw) return undefined;
+export type Cache = Map<string, CacheEntry<unknown>>;
 
-    const entry: CacheEntry<T> = JSON.parse(raw);
-    if (Date.now() - entry.timestamp > CACHE_EXPIRY_MS) {
-      localStorage.removeItem(`${CACHE_PREFIX}${key}`);
-      return undefined;
-    }
-    return entry.data;
-  } catch {
-    return undefined;
-  }
+export function readCache<T>(cache: Cache, key: string): T | undefined {
+  return (cache.get(key) as CacheEntry<T> | undefined)?.data;
 }
 
-export function saveToCache<T>(key: string, data: T): void {
-  try {
-    const entry: CacheEntry<T> = { data, timestamp: Date.now() };
-    localStorage.setItem(`${CACHE_PREFIX}${key}`, JSON.stringify(entry));
-  } catch (e) {
-    console.warn('[preact-homeassistant cache] Failed to save:', e);
-  }
+export function writeCache<T>(cache: Cache, key: string, data: T): void {
+  cache.set(key, { data });
 }

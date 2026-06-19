@@ -1,61 +1,36 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { loadFromCache, saveToCache } from '../cacheUtils';
+import { describe, expect, it } from 'vitest';
+import { type Cache, readCache, writeCache } from '../cacheUtils';
 
 describe('cacheUtils', () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  it('round-trips data through save and load', () => {
-    saveToCache('test-key', { foo: 'bar' });
-    expect(loadFromCache('test-key')).toEqual({ foo: 'bar' });
+  it('round-trips data through write and read', () => {
+    const cache: Cache = new Map();
+    writeCache(cache, 'test-key', { foo: 'bar' });
+    expect(readCache(cache, 'test-key')).toEqual({ foo: 'bar' });
   });
 
   it('returns undefined for missing keys', () => {
-    expect(loadFromCache('nonexistent')).toBeUndefined();
+    const cache: Cache = new Map();
+    expect(readCache(cache, 'nonexistent')).toBeUndefined();
   });
 
-  it('returns undefined for expired entries', () => {
-    saveToCache('old', 'data');
-
-    // Patch the stored timestamp to 25 hours ago
-    const raw = localStorage.getItem('preact-ha:old')!;
-    const entry = JSON.parse(raw);
-    entry.timestamp = Date.now() - 25 * 60 * 60 * 1000;
-    localStorage.setItem('preact-ha:old', JSON.stringify(entry));
-
-    expect(loadFromCache('old')).toBeUndefined();
+  it('overwrites an existing entry', () => {
+    const cache: Cache = new Map();
+    writeCache(cache, 'k', 1);
+    writeCache(cache, 'k', 2);
+    expect(readCache(cache, 'k')).toBe(2);
   });
 
-  it('removes expired entries from localStorage', () => {
-    saveToCache('old', 'data');
-
-    const raw = localStorage.getItem('preact-ha:old')!;
-    const entry = JSON.parse(raw);
-    entry.timestamp = Date.now() - 25 * 60 * 60 * 1000;
-    localStorage.setItem('preact-ha:old', JSON.stringify(entry));
-
-    loadFromCache('old');
-    expect(localStorage.getItem('preact-ha:old')).toBeNull();
+  it('isolates entries between separate cache maps', () => {
+    const a: Cache = new Map();
+    const b: Cache = new Map();
+    writeCache(a, 'k', 'a-value');
+    expect(readCache(b, 'k')).toBeUndefined();
   });
 
-  it('returns undefined for corrupted JSON', () => {
-    localStorage.setItem('preact-ha:bad', 'not json');
-    expect(loadFromCache('bad')).toBeUndefined();
-  });
-
-  it('handles localStorage write failures gracefully', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const originalSetItem = localStorage.setItem;
-    localStorage.setItem = () => {
-      throw new Error('QuotaExceededError');
-    };
-
-    // Should not throw
-    saveToCache('key', 'value');
-    expect(warnSpy).toHaveBeenCalled();
-
-    localStorage.setItem = originalSetItem;
-    vi.restoreAllMocks();
+  it('stores undefined data without conflating it with a missing key', () => {
+    const cache: Cache = new Map();
+    writeCache(cache, 'k', undefined);
+    expect(cache.has('k')).toBe(true);
+    expect(readCache(cache, 'k')).toBeUndefined();
   });
 });

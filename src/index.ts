@@ -3,10 +3,12 @@ export {
   HAProvider,
   useEntity,
   useHass,
+  useHassValue,
+  useHassConfig,
+  useDarkMode,
   useService,
   useCachedFetch,
   useCalendarEvents,
-  useMultiCalendarEvents,
   useWeatherForecast,
 } from './HAContext';
 export { useCallbackStable } from './useCallbackStable';
@@ -17,7 +19,6 @@ export {
 } from './useResizeObserver';
 export { useWidth } from './useWidth';
 export { css, registerRawStyles, getAllStyles } from './styleRegistry';
-export { loadFromCache, saveToCache } from './cacheUtils';
 
 export type {
   HomeAssistant,

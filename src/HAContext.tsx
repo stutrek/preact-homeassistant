@@ -2,7 +2,7 @@ import { createContext } from 'preact';
 import type { ComponentChildren } from 'preact';
 import { useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { loadFromCache, saveToCache } from './cacheUtils';
+import { type Cache, readCache, writeCache } from './cacheUtils';
 import type {
   CalendarEvent,
   CalendarEventWithSource,
@@ -15,10 +15,19 @@ import type {
 } from './types';
 import { useCallbackStable } from './useCallbackStable';
 
+type SubscribeToHass = (callback: () => void) => () => void;
+
+// Default for providers that don't wire up hass-value notifications (Storybook,
+// tests). useHassValue then simply returns its initial value and never updates.
+const noopSubscribeToHass: SubscribeToHass = () => () => {};
+
 interface HAStore {
-  hass: HomeAssistant | undefined;
   getHass: () => HomeAssistant | undefined;
   subscribeToEntity: (entityId: string, callback: (entity: any) => void) => () => void;
+  subscribeToHass: SubscribeToHass;
+  // Per-card cache (events, forecasts, entities). Owned by the provider so its
+  // lifetime is the card's — GC'd with the store when the card is torn down.
+  cache: Cache;
 }
 
 const HAContext = createContext<HAStore | null>(null);
@@ -26,22 +35,38 @@ const HAContext = createContext<HAStore | null>(null);
 interface HAProviderProps {
   hass: HomeAssistant | undefined;
   subscribeToEntity: (entityId: string, callback: (entity: any) => void) => () => void;
+  subscribeToHass?: SubscribeToHass;
+  // Optional injected cache (tests seed/inspect it); defaults to a fresh
+  // per-provider Map held stable across re-renders.
+  cache?: Cache;
   children: ComponentChildren;
 }
 
-export function HAProvider({ hass, subscribeToEntity, children }: HAProviderProps) {
+export function HAProvider({
+  hass,
+  subscribeToEntity,
+  subscribeToHass,
+  cache,
+  children,
+}: HAProviderProps) {
   const hassRef = useRef(hass);
   hassRef.current = hass;
 
   const getHass = useCallbackStable(() => hassRef.current);
 
+  const cacheRef = useRef<Cache>();
+  if (!cacheRef.current) cacheRef.current = cache ?? new Map();
+
+  const resolvedSubscribeToHass = subscribeToHass ?? noopSubscribeToHass;
+
   const store = useMemo<HAStore>(
     () => ({
-      hass: hassRef.current,
       getHass,
       subscribeToEntity,
+      subscribeToHass: resolvedSubscribeToHass,
+      cache: cacheRef.current!,
     }),
-    [getHass, subscribeToEntity],
+    [getHass, subscribeToEntity, resolvedSubscribeToHass],
   );
 
   return <HAContext.Provider value={store}>{children}</HAContext.Provider>;
@@ -69,18 +94,18 @@ export function useEntity<T extends string>(entityId: T): EntityForId<T> | undef
   const cacheKey = `entity:${entityId}`;
 
   const [entity, setEntity] = useState<EntityForId<T> | undefined>(() => {
-    const current = store.hass?.states[entityId] as EntityForId<T> | undefined;
+    const current = store.getHass()?.states[entityId] as EntityForId<T> | undefined;
     if (current) return current;
-    return loadFromCache<EntityForId<T>>(cacheKey);
+    return readCache<EntityForId<T>>(store.cache, cacheKey);
   });
 
   useEffect(() => {
     const unsubscribe = store.subscribeToEntity(entityId, (newEntity) => {
       setEntity(newEntity as EntityForId<T>);
-      saveToCache(cacheKey, newEntity);
+      writeCache(store.cache, cacheKey, newEntity);
     });
     return unsubscribe;
-  }, [entityId, store.subscribeToEntity, cacheKey]);
+  }, [entityId, store.subscribeToEntity, store.cache, cacheKey]);
 
   return entity;
 }
@@ -92,6 +117,47 @@ export function useEntity<T extends string>(entityId: T): EntityForId<T> | undef
 export function useHass(): { getHass: () => HomeAssistant | undefined } {
   const store = useHAStore();
   return { getHass: store.getHass };
+}
+
+/**
+ * Subscribe to a derived slice of the `hass` object (e.g. config, themes) and
+ * re-render only when that slice changes. Use this for non-entity values —
+ * entity state goes through `useEntity`. The selector runs on every hass update
+ * but only re-renders the consumer when `isEqual` reports a change, so it's
+ * cheap for rarely-changing values like config/themes.
+ */
+export function useHassValue<T>(
+  selector: (hass: HomeAssistant | undefined) => T,
+  isEqual: (a: T, b: T) => boolean = Object.is,
+): T {
+  const store = useHAStore();
+
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
+  const isEqualRef = useRef(isEqual);
+  isEqualRef.current = isEqual;
+
+  const [value, setValue] = useState<T>(() => selectorRef.current(store.getHass()));
+
+  useEffect(() => {
+    const unsubscribe = store.subscribeToHass(() => {
+      const next = selectorRef.current(store.getHass());
+      setValue((prev) => (isEqualRef.current(prev, next) ? prev : next));
+    });
+    return unsubscribe;
+  }, [store.subscribeToHass, store.getHass]);
+
+  return value;
+}
+
+/** Re-renders when `hass.config` changes (units, latitude/longitude, etc.). */
+export function useHassConfig(): HomeAssistant['config'] | undefined {
+  return useHassValue((hass) => hass?.config);
+}
+
+/** Re-renders when the active theme's dark mode flips. */
+export function useDarkMode(): boolean {
+  return useHassValue((hass) => hass?.themes?.darkMode ?? false);
 }
 
 type ServiceCaller<T extends string> = <S extends keyof ServicesForId<T> & string>(
@@ -140,10 +206,26 @@ export function useCachedFetch<T>(
   fetcher: () => Promise<T>,
   deps: unknown[],
 ): UseCachedFetchResult<T> {
-  const [data, setData] = useState<T | undefined>(() => loadFromCache<T>(cacheKey));
+  const store = useHAStore();
+  const [data, setData] = useState<T | undefined>(() => readCache<T>(store.cache, cacheKey));
   const [isFresh, setIsFresh] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
   const [error, setError] = useState<Error | undefined>(undefined);
+
+  // Stale-while-revalidate, key-change aware. When `cacheKey` changes we swap to
+  // the new key's cached value synchronously (SWR hit) or keep the previously
+  // rendered data (keep-previous-data on a cold key) — never blanking to a
+  // loading state. The `deps` effect below issues the background refetch; the
+  // only `'loading'` state is a true cold start (nothing cached, nothing fetched).
+  const dataKeyRef = useRef(cacheKey);
+  if (cacheKey !== dataKeyRef.current) {
+    dataKeyRef.current = cacheKey;
+    setIsFresh(false);
+    setError(undefined);
+    const cached = readCache<T>(store.cache, cacheKey);
+    if (cached !== undefined) setData(cached);
+    // cache miss: leave `data` as-is (keep-previous-data)
+  }
 
   const fetchIdRef = useRef(0);
 
@@ -157,7 +239,7 @@ export function useCachedFetch<T>(
       if (fetchId === fetchIdRef.current) {
         setData(result);
         setIsFresh(true);
-        saveToCache(cacheKey, result);
+        writeCache(store.cache, cacheKey, result);
       }
     } catch (err) {
       if (fetchId === fetchIdRef.current) {
@@ -172,7 +254,6 @@ export function useCachedFetch<T>(
 
   useEffect(() => {
     doFetch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
   const status: FetchStatus = useMemo(() => {
@@ -186,87 +267,77 @@ export function useCachedFetch<T>(
 }
 
 interface UseCalendarEventsResult {
-  events: CalendarEvent[] | undefined;
-  loading: boolean;
-  error: Error | undefined;
-  refetch: () => void;
-}
-
-/**
- * Fetch calendar events for a date range from a single calendar.
- */
-export function useCalendarEvents(
-  entityId: `calendar.${string}`,
-  options: { start: Date; end: Date },
-): UseCalendarEventsResult {
-  const { getHass } = useHass();
-  const [events, setEvents] = useState<CalendarEvent[] | undefined>(undefined);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<Error | undefined>(undefined);
-
-  const fetchIdRef = useRef(0);
-
-  const fetchEvents = useCallbackStable(async () => {
-    const hass = getHass();
-    if (!hass?.connection) {
-      setError(new Error('Home Assistant connection not available'));
-      return;
-    }
-
-    const fetchId = ++fetchIdRef.current;
-    setLoading(true);
-    setError(undefined);
-
-    try {
-      const result = await hass.connection.sendMessagePromise<{
-        response: { [entityId: string]: { events: CalendarEvent[] } };
-      }>({
-        type: 'call_service',
-        domain: 'calendar',
-        service: 'get_events',
-        service_data: {
-          start_date_time: options.start.toISOString(),
-          end_date_time: options.end.toISOString(),
-        },
-        target: { entity_id: entityId },
-        return_response: true,
-      });
-
-      if (fetchId === fetchIdRef.current) {
-        const entityEvents = result.response?.[entityId]?.events ?? [];
-        setEvents(entityEvents);
-        setLoading(false);
-      }
-    } catch (err) {
-      if (fetchId === fetchIdRef.current) {
-        setError(err instanceof Error ? err : new Error(String(err)));
-        setLoading(false);
-      }
-    }
-  });
-
-  useEffect(() => {
-    fetchEvents();
-  }, [entityId, options.start.getTime(), options.end.getTime(), fetchEvents]);
-
-  return { events, loading, error, refetch: fetchEvents };
-}
-
-interface UseMultiCalendarEventsResult {
   events: CalendarEventWithSource[] | undefined;
   status: FetchStatus;
   error: Error | undefined;
   refetch: () => void;
+  /**
+   * Warm the cache for an arbitrary range (e.g. adjacent months) without
+   * touching component state. Best-effort: skips ranges already cached and
+   * swallows failures.
+   */
+  prefetch: (range: { start: Date; end: Date }) => void;
+}
+
+function calendarEventsCacheKey(
+  entityIds: `calendar.${string}`[],
+  range: { start: Date; end: Date },
+): string {
+  return `events:${entityIds.join(',')}:${range.start.getTime()}-${range.end.getTime()}`;
+}
+
+async function fetchCalendarRange(
+  hass: HomeAssistant | undefined,
+  entityIds: `calendar.${string}`[],
+  range: { start: Date; end: Date },
+): Promise<CalendarEventWithSource[]> {
+  if (!hass?.connection) {
+    throw new Error('Home Assistant connection not available');
+  }
+  if (entityIds.length === 0) {
+    return [];
+  }
+
+  const results = await Promise.all(
+    entityIds.map(async (entityId) => {
+      try {
+        const result = await hass.connection.sendMessagePromise<{
+          response: { [key: string]: { events: CalendarEvent[] } };
+        }>({
+          type: 'call_service',
+          domain: 'calendar',
+          service: 'get_events',
+          service_data: {
+            start_date_time: range.start.toISOString(),
+            end_date_time: range.end.toISOString(),
+          },
+          target: { entity_id: entityId },
+          return_response: true,
+        });
+
+        const calendarEvents = result.response?.[entityId]?.events ?? [];
+        return calendarEvents.map(
+          (event): CalendarEventWithSource => ({ ...event, calendarId: entityId }),
+        );
+      } catch (err) {
+        console.error(`Failed to fetch events for ${entityId}:`, err);
+        return [];
+      }
+    }),
+  );
+
+  return results.flat();
 }
 
 /**
- * Fetch events from multiple calendars for a date range, with localStorage
- * caching. Events are tagged with their source calendar ID.
+ * Fetch events from one or more calendars for a date range, with in-memory
+ * (per-card) caching and stale-while-revalidate behavior. Events are tagged
+ * with their source calendar ID. Returns `prefetch` to warm adjacent ranges.
  */
-export function useMultiCalendarEvents(
+export function useCalendarEvents(
   entityIds: `calendar.${string}`[],
   options: { start: Date; end: Date },
-): UseMultiCalendarEventsResult {
+): UseCalendarEventsResult {
   const store = useHAStore();
   const { getHass } = useHass();
 
@@ -276,46 +347,7 @@ export function useMultiCalendarEvents(
   const dateRangeKey = `${options.start.getTime()}-${options.end.getTime()}`;
   const cacheKey = `events:${entityIdsKey}:${dateRangeKey}`;
 
-  const fetcher = useCallbackStable(async () => {
-    const hass = getHass();
-    if (!hass?.connection) {
-      throw new Error('Home Assistant connection not available');
-    }
-
-    if (entityIds.length === 0) {
-      return [];
-    }
-
-    const results = await Promise.all(
-      entityIds.map(async (entityId) => {
-        try {
-          const result = await hass.connection.sendMessagePromise<{
-            response: { [key: string]: { events: CalendarEvent[] } };
-          }>({
-            type: 'call_service',
-            domain: 'calendar',
-            service: 'get_events',
-            service_data: {
-              start_date_time: options.start.toISOString(),
-              end_date_time: options.end.toISOString(),
-            },
-            target: { entity_id: entityId },
-            return_response: true,
-          });
-
-          const calendarEvents = result.response?.[entityId]?.events ?? [];
-          return calendarEvents.map(
-            (event): CalendarEventWithSource => ({ ...event, calendarId: entityId }),
-          );
-        } catch (err) {
-          console.error(`Failed to fetch events for ${entityId}:`, err);
-          return [];
-        }
-      }),
-    );
-
-    return results.flat();
-  });
+  const fetcher = useCallbackStable(() => fetchCalendarRange(getHass(), entityIds, options));
 
   const {
     data: events,
@@ -323,6 +355,16 @@ export function useMultiCalendarEvents(
     error,
     refetch,
   } = useCachedFetch(cacheKey, fetcher, [entityIdsKey, dateRangeKey]);
+
+  const prefetch = useCallbackStable((range: { start: Date; end: Date }) => {
+    const key = calendarEventsCacheKey(entityIds, range);
+    if (store.cache.has(key)) return; // already warm
+    fetchCalendarRange(getHass(), entityIds, range)
+      .then((result) => writeCache(store.cache, key, result))
+      .catch(() => {
+        // best-effort prefetch; ignore failures
+      });
+  });
 
   const debouncedRefetch = useCallbackStable(() => {
     if (debounceTimerRef.current) {
@@ -343,7 +385,7 @@ export function useMultiCalendarEvents(
     };
   }, [entityIdsKey, store.subscribeToEntity, debouncedRefetch]);
 
-  return { events, status, error, refetch };
+  return { events, status, error, refetch, prefetch };
 }
 
 interface UseWeatherForecastResult {

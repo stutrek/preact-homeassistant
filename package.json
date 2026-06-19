@@ -1,6 +1,6 @@
 {
   "name": "preact-homeassistant",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Preact hooks and helpers for building Home Assistant custom cards",
   "author": {
     "name": "Stu Kabakoff",

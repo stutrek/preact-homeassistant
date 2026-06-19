@@ -216,4 +216,79 @@ describe('registerPreactCard', () => {
     const CardClass = customElements.get(type) as any;
     expect(CardClass.getStubConfig()).toEqual({ entities: [] });
   });
+
+  it('tears down the Preact tree after the grace period when removed', () => {
+    vi.useFakeTimers();
+    const type = uniqueType();
+    registerPreactCard({ type, name: 'Test', description: 'Test', Component: TestComponent });
+
+    const card = document.createElement(type) as any;
+    document.body.appendChild(card);
+    card.setConfig({ entities: ['sensor.temp'] });
+    card.hass = makeHass({ 'sensor.temp': { state: '72' } });
+    expect(card.shadowRoot.textContent).toContain('test');
+
+    document.body.removeChild(card);
+
+    // Within the grace window: still mounted.
+    vi.advanceTimersByTime(4000);
+    expect(card.shadowRoot.textContent).toContain('test');
+
+    // Past the grace window: torn down (render(null) clears the shadow root).
+    vi.advanceTimersByTime(2000);
+    expect(card.shadowRoot.textContent).toBe('');
+
+    vi.useRealTimers();
+  });
+
+  it('cancels teardown when reconnected within the grace period', () => {
+    vi.useFakeTimers();
+    const type = uniqueType();
+    registerPreactCard({ type, name: 'Test', description: 'Test', Component: TestComponent });
+
+    const card = document.createElement(type) as any;
+    document.body.appendChild(card);
+    card.setConfig({ entities: ['sensor.temp'] });
+    card.hass = makeHass({ 'sensor.temp': { state: '72' } });
+
+    document.body.removeChild(card);
+    vi.advanceTimersByTime(4000); // still within grace
+    document.body.appendChild(card); // reconnect cancels the scheduled teardown
+
+    vi.advanceTimersByTime(4000); // 8000ms total since removal — would have torn down
+    expect(card.shadowRoot.textContent).toContain('test');
+
+    vi.useRealTimers();
+  });
+
+  it('re-renders the editor on every hass update', () => {
+    const type = uniqueType();
+    let editorRenders = 0;
+    function TestEditor() {
+      editorRenders++;
+      return <div>editor</div>;
+    }
+
+    registerPreactCard({
+      type,
+      name: 'Test',
+      description: 'Test',
+      Component: TestComponent,
+      ConfigComponent: TestEditor,
+    });
+
+    const editor = document.createElement(`${type}-editor`) as any;
+    document.body.appendChild(editor);
+    editor.setConfig({ entities: [] });
+
+    editor.hass = makeHass({});
+    const afterFirstHass = editorRenders;
+    expect(afterFirstHass).toBeGreaterThan(0);
+
+    editor.hass = makeHass({ 'sensor.x': { state: '1' } });
+    expect(editorRenders).toBeGreaterThan(afterFirstHass);
+
+    editor.hass = makeHass({ 'sensor.x': { state: '2' } });
+    expect(editorRenders).toBeGreaterThan(afterFirstHass + 1);
+  });
 });
