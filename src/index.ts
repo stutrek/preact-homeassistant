@@ -1,4 +1,5 @@
 export { registerPreactCard } from './registerPreactCard';
+export { HACard, type HACardAlign } from './HACard';
 export {
   HAProvider,
   useEntity,

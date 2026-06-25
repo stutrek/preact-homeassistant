@@ -15,7 +15,7 @@ pnpm add preact preact-homeassistant
 ## Quick start
 
 ```tsx
-import { registerPreactCard, useEntity, css } from 'preact-homeassistant';
+import { registerPreactCard, HACard, useEntity, css } from 'preact-homeassistant';
 
 css`
   .my-card { padding: 16px; }
@@ -26,11 +26,11 @@ function MyCardContent({ config }: { config: { entity: string } }) {
   const weather = useEntity(config.entity);
 
   return (
-    <ha-card>
+    <HACard>
       <div class="card-content my-card">
         <span class="temperature">{weather?.state ?? '...'}</span>
       </div>
-    </ha-card>
+    </HACard>
   );
 }
 
@@ -86,6 +86,33 @@ prop and uses hooks for everything else.
 
 The card renders into a Shadow DOM root. The editor renders into the light DOM
 (required for HA's own custom elements like `<ha-select>` to work).
+
+## `<HACard>`
+
+Use `HACard` as the root of your card instead of a raw `<ha-card>`. It makes the
+card fill the height Home Assistant assigns it.
+
+In HA's **sections (grid)** layout, when a card is resized (e.g. to 3 rows) HA
+gives the card's host element a definite height. A plain `<ha-card>` collapses to
+its natural content height and renders slightly short, leaving a gap. `HACard`
+sets the host and the `ha-card` to fill that height, so the card matches the slot
+exactly. In layouts with no fixed height (masonry, auto rows) it safely collapses
+back to natural height, so it's a drop-in replacement everywhere.
+
+```tsx
+<HACard class="size-large" align="space-between">
+  <div class="card-content my-card">…</div>
+</HACard>
+```
+
+| Prop | Type | Default | Description |
+|---|---|---|---|
+| `align` | `HACardAlign` | `'top'` | How content is distributed vertically when the slot is taller than the content. Friendly aliases `top` / `center` / `bottom`, or any flex `justify-content` value (`space-between`, `space-around`, `space-evenly`, `flex-start`, `flex-end`). |
+| `class` | `string` | — | Class applied to the underlying `ha-card`. |
+| `children` | `ComponentChildren` | — | Card contents. |
+
+`align` only positions content as a block. To make an inner section *stretch* to
+absorb the extra height, give it `flex: 1` in your card's CSS.
 
 ## Hooks
 
