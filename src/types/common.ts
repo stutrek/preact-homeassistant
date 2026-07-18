@@ -14,6 +14,16 @@ export interface HomeAssistant {
   services: HassServices;
   connection: Connection;
   callService: (domain: string, service: string, data?: object) => Promise<void>;
+  /**
+   * Authenticated REST call against HA (`path` has no leading `api/`).
+   * Present on the runtime hass object; optional here so test mocks that
+   * don't need REST access keep compiling.
+   */
+  callApi?: <T = unknown>(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    data?: object,
+  ) => Promise<T>;
   themes?: {
     darkMode?: boolean;
     theme?: string;

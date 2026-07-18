@@ -1,8 +1,8 @@
 import { act, screen, waitFor } from '@testing-library/preact';
 import { render } from '@testing-library/preact';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useCalendarEvents } from '../HAContext';
 import { HAProvider } from '../HAContext';
+import { useCalendarEvents } from '../calendars';
 import type { FetchStatus } from '../types';
 import type { CalendarEventWithSource } from '../types';
 import { createMockSubscribe, makeHass } from './testHelpers';
@@ -212,5 +212,89 @@ describe('useCalendarEvents', () => {
     expect(sendMessagePromise.mock.calls.length).toBeGreaterThan(initialCallCount);
 
     vi.useRealTimers();
+  });
+});
+
+describe('useCalendarEvents REST path', () => {
+  const start = new Date('2025-01-01');
+  const end = new Date('2025-01-31');
+
+  function UidDisplay({ entityIds }: { entityIds: `calendar.${string}`[] }) {
+    const { events } = useCalendarEvents(entityIds, { start, end });
+    return (
+      <span data-testid="events">
+        {events
+          ?.map((e) => `${e.summary}/${e.start}/${e.uid ?? '-'}/${e.recurrence_id ?? '-'}`)
+          .join(',') ?? ''}
+      </span>
+    );
+  }
+
+  it('prefers callApi and passes uid/recurrence_id/rrule through', async () => {
+    const callApi = vi.fn().mockResolvedValue([
+      {
+        summary: 'Recital',
+        description: null,
+        location: null,
+        uid: 'uid-1',
+        recurrence_id: '2025-01-07T15:00:00',
+        rrule: 'FREQ=WEEKLY',
+        start: { dateTime: '2025-01-07T15:00:00-08:00' },
+        end: { dateTime: '2025-01-07T16:00:00-08:00' },
+      },
+      {
+        summary: 'Trip',
+        description: null,
+        location: null,
+        uid: null,
+        recurrence_id: null,
+        rrule: null,
+        start: { date: '2025-01-10' },
+        end: { date: '2025-01-11' },
+      },
+    ]);
+    const hass = makeHass({}, { callApi });
+    const { subscribe } = createMockSubscribe();
+
+    render(
+      <HAProvider hass={hass} subscribeToEntity={subscribe}>
+        <UidDisplay entityIds={['calendar.family']} />
+      </HAProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('events').textContent).toBe(
+        'Recital/2025-01-07T15:00:00-08:00/uid-1/2025-01-07T15:00:00,Trip/2025-01-10/-/-',
+      );
+    });
+
+    expect(callApi).toHaveBeenCalledTimes(1);
+    const [method, path] = callApi.mock.calls[0];
+    expect(method).toBe('GET');
+    expect(path).toMatch(/^calendars\/calendar\.family\?start=.+&end=.+$/);
+    // The WS service-call path must not be used when callApi exists
+    expect(hass.connection.sendMessagePromise).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the WS service call without callApi', async () => {
+    const hass = makeHass();
+    (hass.connection.sendMessagePromise as ReturnType<typeof vi.fn>).mockResolvedValue({
+      response: {
+        'calendar.family': {
+          events: [{ start: '2025-01-05', end: '2025-01-06', summary: 'Fallback' }],
+        },
+      },
+    });
+    const { subscribe } = createMockSubscribe();
+
+    render(
+      <HAProvider hass={hass} subscribeToEntity={subscribe}>
+        <UidDisplay entityIds={['calendar.family']} />
+      </HAProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('events').textContent).toBe('Fallback/2025-01-05/-/-');
+    });
   });
 });

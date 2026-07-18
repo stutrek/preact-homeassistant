@@ -4,8 +4,6 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { type Cache, readCache, writeCache } from './cacheUtils';
 import type {
-  CalendarEvent,
-  CalendarEventWithSource,
   EntityForId,
   FetchStatus,
   ForecastType,
@@ -72,7 +70,8 @@ export function HAProvider({
   return <HAContext.Provider value={store}>{children}</HAContext.Provider>;
 }
 
-function useHAStore(): HAStore {
+/** Internal accessor for the provider store (cache, subscriptions). Not part of the public API. */
+export function useHAStore(): HAStore {
   const store = useContext(HAContext);
   if (!store) {
     throw new Error('useEntity/useHass must be used within an HAProvider');
@@ -264,128 +263,6 @@ export function useCachedFetch<T>(
   }, [data, isFresh, isFetching]);
 
   return { data, status, error, refetch: doFetch };
-}
-
-interface UseCalendarEventsResult {
-  events: CalendarEventWithSource[] | undefined;
-  status: FetchStatus;
-  error: Error | undefined;
-  refetch: () => void;
-  /**
-   * Warm the cache for an arbitrary range (e.g. adjacent months) without
-   * touching component state. Best-effort: skips ranges already cached and
-   * swallows failures.
-   */
-  prefetch: (range: { start: Date; end: Date }) => void;
-}
-
-function calendarEventsCacheKey(
-  entityIds: `calendar.${string}`[],
-  range: { start: Date; end: Date },
-): string {
-  return `events:${entityIds.join(',')}:${range.start.getTime()}-${range.end.getTime()}`;
-}
-
-async function fetchCalendarRange(
-  hass: HomeAssistant | undefined,
-  entityIds: `calendar.${string}`[],
-  range: { start: Date; end: Date },
-): Promise<CalendarEventWithSource[]> {
-  if (!hass?.connection) {
-    throw new Error('Home Assistant connection not available');
-  }
-  if (entityIds.length === 0) {
-    return [];
-  }
-
-  const results = await Promise.all(
-    entityIds.map(async (entityId) => {
-      try {
-        const result = await hass.connection.sendMessagePromise<{
-          response: { [key: string]: { events: CalendarEvent[] } };
-        }>({
-          type: 'call_service',
-          domain: 'calendar',
-          service: 'get_events',
-          service_data: {
-            start_date_time: range.start.toISOString(),
-            end_date_time: range.end.toISOString(),
-          },
-          target: { entity_id: entityId },
-          return_response: true,
-        });
-
-        const calendarEvents = result.response?.[entityId]?.events ?? [];
-        return calendarEvents.map(
-          (event): CalendarEventWithSource => ({ ...event, calendarId: entityId }),
-        );
-      } catch (err) {
-        console.error(`Failed to fetch events for ${entityId}:`, err);
-        return [];
-      }
-    }),
-  );
-
-  return results.flat();
-}
-
-/**
- * Fetch events from one or more calendars for a date range, with in-memory
- * (per-card) caching and stale-while-revalidate behavior. Events are tagged
- * with their source calendar ID. Returns `prefetch` to warm adjacent ranges.
- */
-export function useCalendarEvents(
-  entityIds: `calendar.${string}`[],
-  options: { start: Date; end: Date },
-): UseCalendarEventsResult {
-  const store = useHAStore();
-  const { getHass } = useHass();
-
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const entityIdsKey = entityIds.join(',');
-  const dateRangeKey = `${options.start.getTime()}-${options.end.getTime()}`;
-  const cacheKey = `events:${entityIdsKey}:${dateRangeKey}`;
-
-  const fetcher = useCallbackStable(() => fetchCalendarRange(getHass(), entityIds, options));
-
-  const {
-    data: events,
-    status,
-    error,
-    refetch,
-  } = useCachedFetch(cacheKey, fetcher, [entityIdsKey, dateRangeKey]);
-
-  const prefetch = useCallbackStable((range: { start: Date; end: Date }) => {
-    const key = calendarEventsCacheKey(entityIds, range);
-    if (store.cache.has(key)) return; // already warm
-    fetchCalendarRange(getHass(), entityIds, range)
-      .then((result) => writeCache(store.cache, key, result))
-      .catch(() => {
-        // best-effort prefetch; ignore failures
-      });
-  });
-
-  const debouncedRefetch = useCallbackStable(() => {
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-    debounceTimerRef.current = setTimeout(() => refetch(), 500);
-  });
-
-  useEffect(() => {
-    const unsubscribes = entityIds.map((entityId) =>
-      store.subscribeToEntity(entityId, debouncedRefetch),
-    );
-    return () => {
-      unsubscribes.forEach((unsub) => unsub());
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-    };
-  }, [entityIdsKey, store.subscribeToEntity, debouncedRefetch]);
-
-  return { events, status, error, refetch, prefetch };
 }
 
 interface UseWeatherForecastResult {

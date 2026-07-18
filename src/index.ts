@@ -9,9 +9,15 @@ export {
   useDarkMode,
   useService,
   useCachedFetch,
-  useCalendarEvents,
   useWeatherForecast,
 } from './HAContext';
+export {
+  useCalendarEvents,
+  createCalendarEvent,
+  deleteCalendarEvent,
+  updateCalendarEvent,
+  type CalendarMutationEvent,
+} from './calendars';
 export { useCallbackStable } from './useCallbackStable';
 export {
   useResizeObserver,

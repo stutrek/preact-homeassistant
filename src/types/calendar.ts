@@ -18,7 +18,9 @@ export interface CalendarEntity extends HassEntityBase {
 }
 
 /**
- * Calendar event returned by the calendar/get_events websocket call.
+ * Calendar event as normalized by useCalendarEvents. uid/recurrence_id/rrule
+ * are only present when fetched via the REST API (GET /api/calendars/…) —
+ * the calendar.get_events service response omits them.
  */
 export interface CalendarEvent {
   start: string;
