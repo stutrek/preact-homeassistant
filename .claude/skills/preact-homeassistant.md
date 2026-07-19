@@ -117,14 +117,30 @@ Don't pass `entity_id` in the data payload — it's already injected. Don't call
 
 ### Data hooks
 
-- `useCalendarEvents(entityId, { start, end })` — events from one calendar.
-- `useMultiCalendarEvents(entityIds, { start, end })` — events from many calendars; events come back with `calendarId` attached, cached in localStorage with debounced refetch on entity changes.
-- `useWeatherForecast(entityId, type)` — `type` is `'daily' | 'hourly' | 'twice_daily'`. Cached in localStorage, auto-refetches at the top of each hour.
-- `useCachedFetch(cacheKey, fetcher, deps)` — generic localStorage-cached fetcher; the domain hooks above are built on this.
+- `useCalendarEvents(entityIds, { start, end })` (from `src/calendars.ts`) — events from one or more calendars; events come back with `calendarId` attached. Cached in-memory per card (SWR; cache key embeds the exact range timestamps, so **memoize the range** — an inline `new Date()` busts the cache every render), debounced refetch on entity changes, plus a `prefetch(range)` to warm adjacent ranges.
+  - **Transport matters**: when `hass.callApi` exists (always true in real HA), events are fetched from the REST view `GET /api/calendars/{entity_id}` which includes `uid`, `recurrence_id`, and `rrule`. Without `callApi` (test mocks, Storybook) it falls back to the `calendar.get_events` WS service call, whose response is filtered by HA core (`LIST_EVENT_FIELDS`) and **omits those three fields** — don't build uid-dependent features against the fallback.
+- `useWeatherForecast(entityId, type)` — `type` is `'daily' | 'hourly' | 'twice_daily'`. Auto-refetches at the top of each hour.
+- `useCachedFetch(cacheKey, fetcher, deps)` — generic per-card SWR fetcher; the domain hooks above are built on this.
 
 All return `{ status, error, refetch, ...data }` where `status` is
-`'loading' | 'cached' | 'ready' | 'refreshing'`. `'cached'` means data from
-localStorage is showing while a fresh fetch is in flight — render it.
+`'loading' | 'cached' | 'ready' | 'refreshing'`. `'cached'` means stale cached
+data is showing while a fresh fetch is in flight — render it.
+
+### Calendar mutations
+
+`src/calendars.ts` also exports plain async functions (not hooks) for writing
+to mutable calendars (e.g. HA's Local Calendar integration):
+
+```ts
+await createCalendarEvent(getHass(), 'calendar.x', { dtstart, dtend, summary, description? });
+await updateCalendarEvent(getHass(), 'calendar.x', uid, event);
+await deleteCalendarEvent(getHass(), 'calendar.x', uid, { recurrenceId?, recurrenceRange? });
+```
+
+- They send the `calendar/event/create|update|delete` WS commands, which need only **entity control permission, not admin** — a wall-display user can call them.
+- WS errors reject unchanged; check `err.code === 'unauthorized'` to degrade gracefully.
+- `dtstart`/`dtend` are date-only strings for all-day events, ISO datetimes otherwise.
+- Creating the *calendar itself* is a config flow (admin-only REST): `hass.callApi('POST', 'config/config_entries/flow', { handler: 'local_calendar' })`, then POST the `calendar_name` to `config/config_entries/flow/{flow_id}`. `callApi` is optional on the `HomeAssistant` type (absent in mocks) — guard on it.
 
 ### DOM measurement — `useResizeObserver` / `useWidth`
 
