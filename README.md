@@ -169,26 +169,56 @@ const { getHass } = useHass();
 await getHass()?.callService('script', 'morning_routine');
 ```
 
-### `useCalendarEvents(entityId, { start, end })`
+### `useHassValue(selector, isEqual?)`
 
-Fetch calendar events for a date range from a single calendar.
-
-### `useMultiCalendarEvents(entityIds, { start, end })`
-
-Fetch events from multiple calendars. Events are returned with `calendarId`
-attached. Caches to localStorage and debounce-refetches when entities change.
+Subscribe to a derived slice of the `hass` object (config, themes, anything
+that isn't entity state — entity state goes through `useEntity`). The selector
+runs on every hass update, but the consumer only re-renders when `isEqual`
+reports a change, so it's cheap for rarely-changing values. `isEqual` defaults
+to `Object.is`.
 
 ```tsx
-const { events, status, error, refetch } = useMultiCalendarEvents(
+const unitSystem = useHassValue((hass) => hass?.config?.unit_system?.temperature);
+```
+
+### `useHassConfig()`
+
+Shorthand for `useHassValue((hass) => hass?.config)`. Re-renders when
+`hass.config` changes (units, latitude/longitude, etc.).
+
+### `useDarkMode()`
+
+Shorthand for the active theme's dark-mode flag. Returns `boolean`.
+
+### `useCalendarEvents(entityIds, { start, end })`
+
+Fetch events from one or more calendars for a date range. `entityIds` is an
+array of `` `calendar.${string}` `` IDs, and every returned event carries the
+`calendarId` it came from. Caches per-card in memory with
+stale-while-revalidate, and debounce-refetches when any of the entities change.
+
+```tsx
+const { events, status, error, refetch, prefetch } = useCalendarEvents(
   ['calendar.family', 'calendar.work'],
   { start, end },
 );
 // status: 'loading' | 'cached' | 'ready' | 'refreshing'
+
+// Warm adjacent months without touching component state:
+prefetch({ start: prevMonthStart, end: prevMonthEnd });
 ```
+
+`prefetch(range)` is best-effort — it skips ranges already cached and swallows
+failures.
+
+Events are read from the REST view `GET /api/calendars/{entity_id}`, which
+(unlike the `calendar.get_events` service response) includes `uid`,
+`recurrence_id`, and `rrule`. The service call is used as a fallback when
+`hass.callApi` isn't available (test mocks, Storybook).
 
 ### `useWeatherForecast(entityId, type)`
 
-Fetch weather forecast data. Caches to localStorage, debounce-refetches on
+Fetch weather forecast data. Caches per-card in memory, debounce-refetches on
 entity changes, and auto-refetches at the top of each hour.
 
 ```tsx
@@ -197,8 +227,23 @@ const { forecast, status, error, refetch } = useWeatherForecast('weather.home', 
 
 ### `useCachedFetch(cacheKey, fetcher, deps)`
 
-Generic hook for fetching data with localStorage caching. The domain-specific
-hooks above are built on this.
+Generic hook for fetching data with per-card caching. The domain-specific hooks
+above are built on this. `fetcher` is re-run whenever `deps` change; the result
+is stored under `cacheKey` in the provider's cache.
+
+```tsx
+const { data, status, error, refetch } = useCachedFetch(
+  `my-thing:${id}`,
+  () => fetchMyThing(id),
+  [id],
+);
+```
+
+Behavior is stale-while-revalidate and key-change aware: when `cacheKey`
+changes it swaps to that key's cached value synchronously, or keeps the
+previously rendered data on a cold key — it never blanks to a loading state.
+`'loading'` only appears on a true cold start (nothing cached, nothing
+fetched). In-flight fetches are ignored if a newer one has started.
 
 ### `useResizeObserver(ref, callback, deps?)`
 
@@ -274,12 +319,52 @@ import './MyCard.styles'; // registers styles on import
 
 ### `registerRawStyles(cssString)`
 
-Register a raw CSS string, e.g. from a Vite `?inline` import.
+Register a raw CSS string, e.g. from a Vite `?inline` import. No-ops if the
+exact string is already registered.
+
+### `getAllStyles()`
+
+Returns every registered style as one concatenated string. `registerPreactCard`
+calls this to inject styles into the card's Shadow DOM; you only need it if
+you're rendering a card tree yourself.
+
+## Calendar mutations
+
+Plain async functions (not hooks) for calendars that support writes, e.g. Local
+Calendar. Each takes the `hass` object — get it from `useHass()`. They require
+entity control permission, not admin, and WebSocket errors reject unchanged so
+you can inspect `err.code` (e.g. `'unauthorized'`).
+
+```tsx
+import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent } from 'preact-homeassistant';
+
+const { getHass } = useHass();
+
+await createCalendarEvent(getHass(), 'calendar.family', {
+  dtstart: '2026-07-17T09:00:00',
+  dtend: '2026-07-17T10:00:00',
+  summary: 'Dentist',
+});
+
+await updateCalendarEvent(getHass(), 'calendar.family', uid, { ...event, summary: 'Dentist ✅' });
+
+await deleteCalendarEvent(getHass(), 'calendar.family', uid, {
+  recurrenceId,   // optional, for one instance of a recurring event
+  recurrenceRange, // optional, e.g. 'THISANDFUTURE'
+});
+```
+
+`CalendarMutationEvent` is the payload type: `dtstart` / `dtend` are either
+date-only strings (`'2026-07-17'`, all-day) or ISO datetimes, plus `summary`
+and optional `description`, `location`, `rrule`.
 
 ## Cache utilities
 
-`loadFromCache(key)` / `saveToCache(key, data)` — localStorage wrapper with
-24-hour expiry. Used internally by the data hooks.
+The fetch hooks cache into an in-memory `Map` owned by the provider, so its
+lifetime matches the card and it is garbage-collected on teardown. There is
+intentionally no persistence, TTL, or size cap: freshness comes from entity
+subscriptions and periodic refetch rather than cache expiry. The read/write
+helpers are internal — reach the cache through `useCachedFetch`.
 
 ## Other utilities
 
@@ -287,6 +372,25 @@ Register a raw CSS string, e.g. from a Vite `?inline` import.
 
 Returns a stable callback ref that always calls the latest `fn`. Avoids effect
 re-runs while keeping the closure current.
+
+### `HAProvider`
+
+The context provider `registerPreactCard` wraps your card in. Export exists so
+you can render a card outside Home Assistant (Storybook, tests) with a mock
+`hass`.
+
+```tsx
+<HAProvider hass={mockHass} subscribeToEntity={() => () => {}}>
+  <MyCardContent config={config} />
+</HAProvider>
+```
+
+| Prop | Type | Required | Description |
+|---|---|---|---|
+| `hass` | `HomeAssistant \| undefined` | Yes | The hass object handed to hooks. |
+| `subscribeToEntity` | `(entityId, cb) => () => void` | Yes | Entity subscription plumbing. Return a no-op unsubscribe for static mocks. |
+| `subscribeToHass` | `(cb) => () => void` | No | Notifies `useHassValue` consumers. Defaults to a no-op, so those hooks return their initial value and never update. |
+| `cache` | `Cache` | No | Inject a cache Map to seed or inspect it. Defaults to a fresh per-provider Map. |
 
 ## Types
 
@@ -304,19 +408,26 @@ Re-exported from the package root:
 ```ts
 import type {
   HomeAssistant,
+  FetchStatus,
   CalendarEntity,
+  CalendarEvent,
+  CalendarEventWithSource,
+  CalendarMutationEvent,
   WeatherEntity,
+  WeatherForecast,
+  ForecastType,
   SunEntity,
   FanEntity,
   FanServices,
-  WeatherForecast,
   EntityForId,
   DomainEntityMap,
   DomainServiceMap,
   ServicesForId,
-  /* ... */
 } from 'preact-homeassistant';
 ```
+
+The non-domain types `HACardAlign`, `ElementSize`, and `ResizeCallback` are
+exported from the root as well, alongside their components/hooks.
 
 ## Contributing types
 
@@ -344,8 +455,10 @@ attributes can land later.
 ```bash
 pnpm install
 pnpm test       # vitest run
+pnpm typecheck  # tsc --noEmit
 pnpm build      # tsc --noEmit && vite build
-pnpm lint       # biome check
+pnpm lint       # biome check src
+pnpm lint:fix   # biome check --write src
 ```
 
 ## Publishing
@@ -353,7 +466,7 @@ pnpm lint       # biome check
 Releases are published to npm manually from a local machine (no CI publish):
 
 ```bash
-pnpm test && pnpm build && pnpm typecheck
+pnpm test && pnpm build
 git tag v0.X.Y && git push origin v0.X.Y
 pnpm publish --access public --provenance
 ```

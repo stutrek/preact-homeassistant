@@ -86,6 +86,7 @@ export function useHAStore(): HAStore {
  *   - 'calendar.xyz' -> CalendarEntity
  *   - 'weather.xyz' -> WeatherEntity
  *   - 'sun.sun'     -> SunEntity
+ *   - 'fan.xyz'     -> FanEntity
  *   - other domains -> HassEntity (fallback)
  */
 export function useEntity<T extends string>(entityId: T): EntityForId<T> | undefined {
