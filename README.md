@@ -14,6 +14,8 @@ pnpm add preact preact-homeassistant
 
 ## Quick start
 
+The easiest way is to [use the template](https://github.com/stutrek/preact-homeassistant-template)
+
 ```tsx
 import { registerPreactCard, HACard, useEntity, css } from 'preact-homeassistant';
 
