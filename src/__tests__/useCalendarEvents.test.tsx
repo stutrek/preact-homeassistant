@@ -298,3 +298,67 @@ describe('useCalendarEvents REST path', () => {
     });
   });
 });
+
+describe('useCalendarEvents persistence', () => {
+  const start = new Date('2025-01-01');
+  const end = new Date('2025-01-31');
+
+  function renderWith(
+    entityIds: `calendar.${string}`[],
+    sendMessagePromise: ReturnType<typeof vi.fn>,
+  ) {
+    const hass = makeHass({}, { connection: { sendMessagePromise } as any });
+    const { subscribe } = createMockSubscribe();
+    return render(
+      <HAProvider hass={hass} subscribeToEntity={subscribe}>
+        <CalendarDisplay entityIds={entityIds} start={start} end={end} />
+      </HAProvider>,
+    );
+  }
+
+  const respond = (msg: { target: { entity_id: string } }) => ({
+    response: {
+      [msg.target.entity_id]: {
+        events: [{ start: '2025-01-05', end: '2025-01-05', summary: msg.target.entity_id }],
+      },
+    },
+  });
+
+  it('seeds a fresh provider from persisted per-entity events', async () => {
+    const first = renderWith(['calendar.family'], vi.fn().mockImplementation(respond));
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+    first.unmount();
+
+    // New provider = empty in-memory cache; a never-resolving fetch shows the seed.
+    renderWith(['calendar.family'], vi.fn().mockReturnValue(new Promise(() => {})));
+    expect(screen.getByTestId('status').textContent).toBe('cached');
+    expect(screen.getByTestId('events').textContent).toBe('calendar.family:calendar.family');
+  });
+
+  it('composes a different calendar set from per-entity entries', async () => {
+    const a = renderWith(['calendar.family'], vi.fn().mockImplementation(respond));
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+    a.unmount();
+    const b = renderWith(['calendar.work'], vi.fn().mockImplementation(respond));
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+    b.unmount();
+
+    renderWith(
+      ['calendar.family', 'calendar.work'],
+      vi.fn().mockReturnValue(new Promise(() => {})),
+    );
+    expect(screen.getByTestId('status').textContent).toBe('cached');
+    expect(screen.getByTestId('count').textContent).toBe('2');
+  });
+
+  it('does not seed when any calendar is missing, and never persists failures', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failing = vi.fn().mockRejectedValue(new Error('offline'));
+    const first = renderWith(['calendar.family'], failing);
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+    first.unmount();
+
+    renderWith(['calendar.family'], vi.fn().mockReturnValue(new Promise(() => {})));
+    expect(screen.getByTestId('status').textContent).toBe('loading');
+  });
+});

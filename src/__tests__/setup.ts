@@ -1,3 +1,6 @@
+import { beforeEach } from 'vitest';
+import { resetPersistedSweep } from '../persistentCache';
+
 // Node 22+ has a built-in localStorage that conflicts with jsdom's.
 // This setup ensures we have a proper Web Storage API implementation.
 
@@ -24,4 +27,10 @@ Object.defineProperty(globalThis, 'localStorage', {
   value: localStorageMock,
   writable: true,
   configurable: true,
+});
+
+// Persisted cache entries must not leak between tests.
+beforeEach(() => {
+  store.clear();
+  resetPersistedSweep();
 });

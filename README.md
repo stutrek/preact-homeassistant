@@ -195,7 +195,8 @@ Shorthand for the active theme's dark-mode flag. Returns `boolean`.
 Fetch events from one or more calendars for a date range. `entityIds` is an
 array of `` `calendar.${string}` `` IDs, and every returned event carries the
 `calendarId` it came from. Caches per-card in memory with
-stale-while-revalidate, and debounce-refetches when any of the entities change.
+stale-while-revalidate, persists each calendar's events to localStorage (see
+[Caching](#caching)), and debounce-refetches when any of the entities change.
 
 ```tsx
 const { events, status, error, refetch, prefetch } = useCalendarEvents(
@@ -218,14 +219,14 @@ Events are read from the REST view `GET /api/calendars/{entity_id}`, which
 
 ### `useWeatherForecast(entityId, type)`
 
-Fetch weather forecast data. Caches per-card in memory, debounce-refetches on
-entity changes, and auto-refetches at the top of each hour.
+Fetch weather forecast data. Caches per-card in memory and in localStorage,
+debounce-refetches on entity changes, and auto-refetches at the top of each hour.
 
 ```tsx
 const { forecast, status, error, refetch } = useWeatherForecast('weather.home', 'hourly');
 ```
 
-### `useCachedFetch(cacheKey, fetcher, deps)`
+### `useCachedFetch(cacheKey, fetcher, deps, options?)`
 
 Generic hook for fetching data with per-card caching. The domain-specific hooks
 above are built on this. `fetcher` is re-run whenever `deps` change; the result
@@ -244,6 +245,10 @@ changes it swaps to that key's cached value synchronously, or keeps the
 previously rendered data on a cold key — it never blanks to a loading state.
 `'loading'` only appears on a true cold start (nothing cached, nothing
 fetched). In-flight fetches are ignored if a newer one has started.
+
+`options.seed` is a fallback read used when the in-memory cache misses (the
+built-in hooks use it to read localStorage). Seeded data reports `'cached'` and
+is revalidated like any other hit.
 
 ### `useResizeObserver(ref, callback, deps?)`
 
@@ -358,13 +363,33 @@ await deleteCalendarEvent(getHass(), 'calendar.family', uid, {
 date-only strings (`'2026-07-17'`, all-day) or ISO datetimes, plus `summary`
 and optional `description`, `location`, `rrule`.
 
-## Cache utilities
+## Caching
 
 The fetch hooks cache into an in-memory `Map` owned by the provider, so its
-lifetime matches the card and it is garbage-collected on teardown. There is
-intentionally no persistence, TTL, or size cap: freshness comes from entity
-subscriptions and periodic refetch rather than cache expiry. The read/write
-helpers are internal — reach the cache through `useCachedFetch`.
+lifetime matches the card and it is garbage-collected on teardown.
+
+Beneath that, calendar events and forecasts persist to localStorage so a
+reload renders immediately. Persisted data only seeds a cold start: it's always
+reported as `'cached'` and revalidated, so freshness still comes from entity
+subscriptions and periodic refetch. Expiry exists to bound storage:
+
+- Calendar events are stored **per entity** and range, so any set of calendars
+  (across cards, or a card's regular and highlight calendars) shares entries.
+- Entries older than 3 days are dropped and never shown.
+- At most 60 entries are kept; the least recently used are evicted.
+- Expiry and the cap cover the whole `preact-ha:` namespace, not just this
+  version's keys: every card built on this library shares one localStorage, so
+  data left behind by a deleted card (or one on another library version)
+  expires whenever any preact-ha card loads.
+- Keys are prefixed `preact-ha:v2:`; bumping the version makes old entries
+  unreadable, and they then age out.
+- Cross-version contract: every value under `preact-ha:` is JSON with numeric
+  `s` (saved at) and `u` (last used) timestamps in ms. Future versions must keep
+  this so they can expire each other's data.
+- Failed fetches are never persisted, and storage errors fall back to
+  memory-only.
+
+The read/write helpers are internal — reach the cache through `useCachedFetch`.
 
 ## Other utilities
 

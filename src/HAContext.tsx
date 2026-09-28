@@ -3,6 +3,7 @@ import type { ComponentChildren } from 'preact';
 import { useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { type Cache, readCache, writeCache } from './cacheUtils';
+import { readPersisted, writePersisted } from './persistentCache';
 import type {
   EntityForId,
   FetchStatus,
@@ -197,17 +198,28 @@ interface UseCachedFetchResult<T> {
   refetch: () => void;
 }
 
+interface UseCachedFetchOptions<T> {
+  /**
+   * Fallback read when the in-memory cache misses (e.g. from localStorage).
+   * Seeded data is shown as stale (`'cached'`) and revalidated like any hit.
+   */
+  seed?: () => T | undefined;
+}
+
 /**
- * Generic hook for fetching data with localStorage caching. Returns a cache-aware
- * status string to distinguish cached vs fresh data.
+ * Generic hook for fetching data with in-memory caching (optionally seeded from
+ * a persistent store). Returns a cache-aware status string to distinguish cached
+ * vs fresh data.
  */
 export function useCachedFetch<T>(
   cacheKey: string,
   fetcher: () => Promise<T>,
   deps: unknown[],
+  options: UseCachedFetchOptions<T> = {},
 ): UseCachedFetchResult<T> {
   const store = useHAStore();
-  const [data, setData] = useState<T | undefined>(() => readCache<T>(store.cache, cacheKey));
+  const readCached = () => readCache<T>(store.cache, cacheKey) ?? options.seed?.();
+  const [data, setData] = useState<T | undefined>(readCached);
   const [isFresh, setIsFresh] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
   const [error, setError] = useState<Error | undefined>(undefined);
@@ -222,7 +234,7 @@ export function useCachedFetch<T>(
     dataKeyRef.current = cacheKey;
     setIsFresh(false);
     setError(undefined);
-    const cached = readCache<T>(store.cache, cacheKey);
+    const cached = readCached();
     if (cached !== undefined) setData(cached);
     // cache miss: leave `data` as-is (keep-previous-data)
   }
@@ -274,8 +286,9 @@ interface UseWeatherForecastResult {
 }
 
 /**
- * Fetch weather forecast data with localStorage caching. Auto-refetches at the
- * top of each hour and when the underlying entity changes (debounced).
+ * Fetch weather forecast data, cached in memory and persisted to localStorage
+ * so a reload renders immediately. Auto-refetches at the top of each hour and
+ * when the underlying entity changes (debounced).
  */
 export function useWeatherForecast(
   entityId: `weather.${string}`,
@@ -305,7 +318,9 @@ export function useWeatherForecast(
       return_response: true,
     });
 
-    return result.response?.[entityId]?.forecast ?? [];
+    const forecast = result.response?.[entityId]?.forecast ?? [];
+    writePersisted(cacheKey, forecast);
+    return forecast;
   });
 
   const {
@@ -313,7 +328,9 @@ export function useWeatherForecast(
     status,
     error,
     refetch,
-  } = useCachedFetch(cacheKey, fetcher, [entityId, type]);
+  } = useCachedFetch(cacheKey, fetcher, [entityId, type], {
+    seed: () => readPersisted<WeatherForecast[]>(cacheKey),
+  });
 
   const debouncedRefetch = useCallbackStable(() => {
     if (debounceTimerRef.current) {

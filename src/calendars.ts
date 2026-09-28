@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'preact/hooks';
 
 import { useCachedFetch, useHAStore, useHass } from './HAContext';
 import { writeCache } from './cacheUtils';
+import { readPersisted, writePersisted } from './persistentCache';
 import type { CalendarEvent, CalendarEventWithSource, FetchStatus, HomeAssistant } from './types';
 import { useCallbackStable } from './useCallbackStable';
 
@@ -23,6 +24,33 @@ function calendarEventsCacheKey(
   range: { start: Date; end: Date },
 ): string {
   return `events:${entityIds.join(',')}:${range.start.getTime()}-${range.end.getTime()}`;
+}
+
+/**
+ * Persistent (localStorage) key for one calendar's events over a range. Stored
+ * per entity rather than per entity set, so any combination of calendars —
+ * across cards, or the same card's regular vs highlight calendars — shares it.
+ */
+function entityEventsPersistKey(
+  entityId: `calendar.${string}`,
+  range: { start: Date; end: Date },
+): string {
+  return `events:${entityId}:${range.start.getTime()}-${range.end.getTime()}`;
+}
+
+/** Assemble a range from persisted per-entity entries; undefined unless all are present. */
+function readPersistedRange(
+  entityIds: `calendar.${string}`[],
+  range: { start: Date; end: Date },
+): CalendarEventWithSource[] | undefined {
+  if (entityIds.length === 0) return undefined;
+  const result: CalendarEventWithSource[] = [];
+  for (const entityId of entityIds) {
+    const events = readPersisted<CalendarEvent[]>(entityEventsPersistKey(entityId, range));
+    if (!events) return undefined;
+    for (const event of events) result.push({ ...event, calendarId: entityId });
+  }
+  return result;
 }
 
 /** Event shape returned by the REST view GET /api/calendars/{entity_id}. */
@@ -110,6 +138,8 @@ async function fetchCalendarRange(
         const calendarEvents = hass.callApi
           ? await fetchEntityEventsRest(hass, entityId, range)
           : await fetchEntityEventsWs(hass, entityId, range);
+        // Persist only successful fetches; a failure must not cache as "no events".
+        writePersisted(entityEventsPersistKey(entityId, range), calendarEvents);
         return calendarEvents.map(
           (event): CalendarEventWithSource => ({ ...event, calendarId: entityId }),
         );
@@ -125,8 +155,10 @@ async function fetchCalendarRange(
 
 /**
  * Fetch events from one or more calendars for a date range, with in-memory
- * (per-card) caching and stale-while-revalidate behavior. Events are tagged
- * with their source calendar ID. Returns `prefetch` to warm adjacent ranges.
+ * (per-card) caching and stale-while-revalidate behavior. Each calendar's
+ * events are also persisted to localStorage per entity, so a reload renders
+ * immediately. Events are tagged with their source calendar ID. Returns
+ * `prefetch` to warm adjacent ranges.
  */
 export function useCalendarEvents(
   entityIds: `calendar.${string}`[],
@@ -148,7 +180,9 @@ export function useCalendarEvents(
     status,
     error,
     refetch,
-  } = useCachedFetch(cacheKey, fetcher, [entityIdsKey, dateRangeKey]);
+  } = useCachedFetch(cacheKey, fetcher, [entityIdsKey, dateRangeKey], {
+    seed: () => readPersistedRange(entityIds, options),
+  });
 
   const prefetch = useCallbackStable((range: { start: Date; end: Date }) => {
     const key = calendarEventsCacheKey(entityIds, range);
